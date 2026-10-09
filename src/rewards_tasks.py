@@ -11,6 +11,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.common.exceptions import StaleElementReferenceException, TimeoutException, NoSuchElementException
 import tab_utils
+import levels
 import queries
 import mouse_trajectory
 import mimic_typing
@@ -115,6 +116,16 @@ class RewardsTaskUtils:
 		self.elements = element_selectors.ElementSelectionUtils(driver)
 		self.verify_signed_in_state()
 
+		# Read here because the constructor has just loaded the Rewards home page,
+		# which is the dashboard. Every task after this works from the earn page,
+		# where reading the level would cost a navigation each way.
+		self.level = self.resolve_level()
+
+		logger.info(
+			"Rewards level: %s (%s points per search, %s a day across all surfaces)",
+			self.level.name, levels.POINTS_PER_SEARCH, self.level.daily_search_points_total
+		)
+
 	def verify_signed_in_state(self):
 		try:
 			time.sleep(2)
@@ -124,6 +135,64 @@ class RewardsTaskUtils:
 				logger.warning("Please sign in once on rewards.bing.com in this Edge profile window.")
 		except Exception:
 			pass
+
+	def _scrape_level(self) -> levels.Level | None:
+		"""The level on the dashboard badge, or None when it cannot be read.
+
+		Best effort by design. The badge is markup this does not control, so a variant
+		that renames its class and words its text differently falls through to the
+		configured level rather than ending the run.
+		"""
+		try:
+			badges = self.elements.get_membership_level_badges()
+		except Exception as exc:
+			logger.debug(
+				"Could not read a membership level from the dashboard: %s",
+				log_utils.exception_summary(exc),
+			)
+
+			return None
+
+		for class_attribute, text in badges:
+			found = levels.level_from_badge(class_attribute, text)
+
+			if found is not None:
+				return found
+
+		return None
+
+	def resolve_level(self) -> levels.Level:
+		"""Which Rewards level this run works to.
+
+		REWARDS_LEVEL wins wherever it is set, because it is the only way to correct
+		a badge this cannot read. The dashboard comes next, being the only source
+		that is right without being told. Member is the last resort: it has the
+		lowest cap of the three, so an account that is really higher is under-reached
+		rather than sent after points it cannot earn.
+		"""
+		chosen = levels.configured()
+		scraped = self._scrape_level()
+
+		if chosen is not None:
+			if scraped is not None and scraped != chosen:
+				logger.warning(
+					"%s says %s but the dashboard reads %s. Using %s as told; unset %s "
+					"to follow the dashboard instead.",
+					levels.ENV_VAR, chosen.name, scraped.name, chosen.name, levels.ENV_VAR,
+				)
+
+			return chosen
+
+		if scraped is not None:
+			return scraped
+
+		logger.info(
+			"Could not read the Rewards level from the dashboard and %s is unset, so "
+			"assuming %s. Set %s if that is wrong.",
+			levels.ENV_VAR, levels.DEFAULT.name, levels.ENV_VAR,
+		)
+
+		return levels.DEFAULT
 
 	def find_element(self, xpath: str):
 		return self.driver.find_element(By.XPATH, xpath)
@@ -403,6 +472,11 @@ class RewardsTaskUtils:
 		# card searches count towards the same quota. A single up front division
 		# therefore leaves points on the table and still reports success.
 		# Measure, search, measure again.
+		# The panel's maximum is the ceiling, including when it looks low against
+		# the level. A Gold account reads 90 here rather than the documented 150,
+		# because the other 60 is only earnable from a mobile user agent and this
+		# bot sends a desktop one. Searching past what the panel reports earns
+		# nothing and still costs the pacing delay on every one of them.
 		points_earned, max_pts = self.read_search_points()
 
 		logger.info("Search points before: %s/%s", points_earned, max_pts)
@@ -414,8 +488,8 @@ class RewardsTaskUtils:
 			if points_earned >= max_pts:
 				break
 
-			# Assume the lower known rate so a round never overshoots by much.
-			searches = max(1, (max_pts - points_earned) // 3)
+			# Assume the documented rate so a round never overshoots by much.
+			searches = max(1, (max_pts - points_earned) // levels.POINTS_PER_SEARCH)
 
 			batch = self.run_search_batch(searches, already_sent=sent)
 			sent += batch
@@ -436,6 +510,17 @@ class RewardsTaskUtils:
 			logger.warning("Search quota not filled: %s/%s", points_earned, max_pts)
 		else:
 			logger.info("Search quota complete: %s/%s", points_earned, max_pts)
+
+		# Not a shortfall to act on, but worth naming: without it a Gold account
+		# finishing at 90 looks 60 short of its own level for no stated reason.
+		unreachable = self.level.daily_search_points_total - max_pts
+
+		if unreachable > 0:
+			logger.info(
+				"%s allows %s search points a day across all surfaces. %s of those need "
+				"searches from a mobile user agent, which this bot does not send.",
+				self.level.name, self.level.daily_search_points_total, unreachable
+			)
 
 	def read_search_points(self):
 		"""Open the points breakdown, read the Bing search row, close it again."""

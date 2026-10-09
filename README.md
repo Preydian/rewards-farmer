@@ -11,6 +11,7 @@ Automation for MS Rewards based on [https://youtu.be/4qdPcMNaioA](https://youtu.
 - [If Edge will not start](#if-edge-will-not-start)
 - [Running more than one account](#running-more-than-one-account)
 - [Docker](#docker)
+- [Rewards levels](#rewards-levels)
 - [Logging](#logging)
 - [Windows Virtual Desktop (Windows only)](#windows-virtual-desktop-windows-only)
 
@@ -207,6 +208,53 @@ REWARDS_ACCOUNTS=personal,spare docker compose run --rm rewards-farmer
 ```
 
 `REWARDS_HEADLESS=1` is set in the image. It also works on the host if you want a run with no visible window; the pointer code needs an explicit window size in that mode, which `main.py` sets.
+
+## Rewards levels
+
+Your account's level sets how many Bing search points a day it can earn.
+
+| Level | Points to reach (per month) | Level up activities (per month) | Daily search points, all surfaces | Monthly level bonus | Default search bonus | Bing Star bonus (up to) | Redemption coupon |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Member | - | - | 30 | 60 | 30 | 300 | - |
+| Silver | 500 | - | 150 | 180 | 90 | 900 | 100 |
+| Gold | 750 | 2 | 150 | 420 | 210 | 2100 | 200 |
+
+Searches pay 3 points each at every level. Silver and Gold also unlock exclusive earning offers. The Microsoft Store and Xbox point multipliers (1x/10x/10x and 4x across the board) apply to purchases, so `src/levels.py` records them but nothing in a run reads them.
+
+The bot reads the level off the dashboard badge, which renders as
+
+```html
+<p class="... text-rewardsLevelBadgeFg bg-rewardsGoldBadgeBg">Gold Member</p>
+```
+
+It takes the tier from the background class first and from the text second, because `bg-rewardsGoldBadgeBg` reads the same in every market while the text beside it is translated. Where neither can be read, `REWARDS_LEVEL` says which level to assume, and failing that it assumes Member. Set it in `.env` like the other settings, or for a single run:
+
+```sh
+REWARDS_LEVEL=silver python src/main.py          # bash
+$env:REWARDS_LEVEL="silver"; python src/main.py  # PowerShell
+```
+
+`REWARDS_LEVEL` wins over the dashboard wherever both are available, so it is also how you correct a level the bot reads wrongly. It logs a warning when the two disagree.
+
+**The daily search figure is a total across every surface Rewards counts, not a desktop ceiling.** A Gold account reads `90/90` in the points breakdown panel against a documented 150. The other 60 is earnable only from searches made with a mobile user agent, and this bot sends a desktop one, so 90 really is everything a run can get.
+
+The bot therefore works towards whatever the panel reports and never towards the table's figure. Where the two differ it says so once the search task is done:
+
+```
+INFO  Search quota complete: 90/90
+INFO  Gold allows 150 search points a day across all surfaces. 60 of those need
+      searches from a mobile user agent, which this bot does not send.
+```
+
+An earlier version treated the table's figure as a floor and kept searching past `90/90`, earning nothing at five to seven seconds a search. The panel is the ceiling, and three tests pin it there so that cannot come back.
+
+To see what the bot reads on your own account:
+
+```sh
+poetry run python src/check_selectors.py
+```
+
+The `## level` section prints each badge it found, the class it carries and which tier it read from it. Check that first if the level comes out wrong, since the badge is markup the project does not control and a deploy can rename it.
 
 ## Logging
 

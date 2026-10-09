@@ -388,5 +388,79 @@ class VisualSearchPanel(unittest.TestCase):
 		self.assertFalse(selectors.visual_search_done_today())
 
 
+class MembershipLevelBadge(unittest.TestCase):
+	"""The badge the dashboard actually renders.
+
+	The real element is
+
+	    <p class="... text-rewardsLevelBadgeFg bg-rewardsGoldBadgeBg">Gold Member</p>
+
+	which carries no word "level" in its text at all. A text-only search for that
+	word found nothing here, which is why the class is the primary hook.
+	"""
+
+	CLASS = (
+		"rounded-ctrlBadgeCorner px-2 py-1 text-globalCaption1Strong "
+		"text-rewardsLevelBadgeFg bg-rewardsGoldBadgeBg"
+	)
+
+	def _badge(self, class_attribute, text):
+		return FakeElement(text=text, attributes={"class": class_attribute})
+
+	def _driver(self, by_class=(), by_text=()):
+		selectors = element_selectors.ElementSelectionUtils
+		css = f'[class*="{element_selectors.LEVEL_BADGE_CLASS}"]'
+
+		return FakeDriver(children={
+			(By.CSS_SELECTOR, css): list(by_class),
+			(By.XPATH, selectors._membership_level_xpath()): list(by_text),
+		})
+
+	def test_finds_the_badge_by_its_class(self):
+		driver = self._driver(by_class=[self._badge(self.CLASS, "Gold Member")])
+
+		self.assertEqual(
+			selectors_for(driver).get_membership_level_badges(),
+			[(self.CLASS, "Gold Member")],
+		)
+
+	def test_the_class_lookup_is_preferred_over_the_text_one(self):
+		# The text search is a far looser net, so it must not run while the
+		# precise hook is still resolving.
+		driver = self._driver(
+			by_class=[self._badge(self.CLASS, "Gold Member")],
+			by_text=[self._badge("", "Become a member today")],
+		)
+
+		badges = selectors_for(driver).get_membership_level_badges()
+
+		self.assertEqual([text for _, text in badges], ["Gold Member"])
+
+	def test_falls_back_to_the_text_search_when_the_class_is_renamed(self):
+		driver = self._driver(by_text=[self._badge("px-2", "Silver Member")])
+
+		self.assertEqual(
+			selectors_for(driver).get_membership_level_badges(),
+			[("px-2", "Silver Member")],
+		)
+
+	def test_the_shortest_text_comes_first(self):
+		# A text search matches the badge's ancestors too, and the innermost
+		# match is the one that is only about the badge.
+		driver = self._driver(by_text=[
+			self._badge("wrapper", "Gold Member | 1,234 points | Redeem"),
+			self._badge(self.CLASS, "Gold Member"),
+		])
+
+		badges = selectors_for(driver).get_membership_level_badges()
+
+		self.assertEqual(badges[0][1], "Gold Member")
+
+	def test_no_badge_anywhere_is_reported_as_missing(self):
+		# Not a failure on its own: a run falls back to REWARDS_LEVEL.
+		with self.assertRaises(NoSuchElementException):
+			selectors_for(self._driver()).get_membership_level_badges()
+
+
 if __name__ == "__main__":
 	unittest.main()

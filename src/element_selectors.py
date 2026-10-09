@@ -35,6 +35,10 @@ class Labels:
 	READY_TO_CLAIM = "ready to claim"
 	CLAIM = "claim"                      # exact label preferred, substring as fallback
 	DAILY_SET_STREAK = "daily set streak"
+	# Only safe scoped to the streaks section. Unscoped it also matches the
+	# level up entry, "Complete the Daily Set for 7 days in a row", which is
+	# why DAILY_SET_STREAK is tried against the whole page first.
+	DAILY_SET = "daily set"
 	CARD_COMPLETED = "completed"
 	# The full streak label on purpose: plain "visual search" also matches an
 	# element on the dashboard, which can go stale mid-interaction.
@@ -190,22 +194,27 @@ class ElementSelectionUtils:
 		except NoSuchElementException:
 			pass
 
-		# The positional fallback only helps if what sits there really is the
-		# daily set entry. On a partially rendered streaks section it is not:
-		# observed returning the mobile app entry, and clicking that opens the
-		# app store page instead of the panel, which is what the reports in #45
-		# and #46 describe. Check before handing it back, and skip the task
-		# rather than click the wrong streak.
-		candidate = self._streaks_button(3)
-		label = (candidate.text or "").strip()
+		# Markets that word the streak label differently still carry "daily set"
+		# on the opener, so fall back to matching that inside the streaks
+		# section. Scoping is what makes the shorter needle safe: the level up
+		# entry lives in a section of its own and stays out of reach.
+		#
+		# This replaces a fallback that took whatever sat third in the section.
+		# On a partially rendered streaks section that was the mobile app entry,
+		# and clicking it opens the app store instead of the panel, which is
+		# what #45 and #46 describe. Matching on content finds the opener
+		# wherever in the section it sits, and never returns a different streak.
+		streaks = self.driver.find_element(By.ID, "streaks")
 
-		if "daily set" not in label.lower():
+		try:
+			return self._button_containing(Labels.DAILY_SET, root=streaks)
+		except NoSuchElementException:
+			# Absence rather than a wrong guess, so the wait above the caller
+			# keeps retrying while the section fills, and reports a skip only
+			# if it never does.
 			raise NoSuchElementException(
-				"daily set opener not found by label, and position 3 holds "
-				f"{label.splitlines()[0] if label else '<empty>'!r} instead"
-			)
-
-		return candidate
+				f"no button in the streaks section contains {Labels.DAILY_SET!r}"
+			) from None
 
 	def get_daily_set_elements(self):
 		"""The daily set activities in the opened panel.

@@ -204,10 +204,18 @@ class ExploreOnBingSection(unittest.TestCase):
 class DailySetOpener(unittest.TestCase):
 	"""The opener label has to be distinguished from the level up entry."""
 
-	def _driver(self, labels):
-		buttons = [FakeElement(text=text) for text in labels]
+	def _driver(self, labels, streaks_labels=None):
+		"""Buttons on the page, and optionally a streaks section holding its own."""
+		children = {(By.TAG_NAME, "button"): [FakeElement(text=t) for t in labels]}
 
-		return FakeDriver(children={(By.TAG_NAME, "button"): buttons})
+		if streaks_labels is not None:
+			streaks = FakeElement(children={
+				(By.TAG_NAME, "button"): [FakeElement(text=t) for t in streaks_labels]
+			})
+
+			children[(By.ID, "streaks")] = [streaks]
+
+		return FakeDriver(children=children)
 
 	def test_matches_the_streak_button(self):
 		driver = self._driver([
@@ -225,6 +233,44 @@ class DailySetOpener(unittest.TestCase):
 		# No streak button and no streaks section to fall back to.
 		with self.assertRaises(NoSuchElementException):
 			selectors_for(driver).get_open_daily_set_button()
+
+	def test_falls_back_to_the_daily_set_button_inside_streaks(self):
+		# The opener is not third here. The positional fallback this replaces
+		# took whatever sat at that index, which is how #45 and #46 ended up
+		# clicking the mobile app entry and opening the app store.
+		driver = self._driver(
+			labels=["Points breakdown"],
+			streaks_labels=[
+				"Get the Bing app",
+				"Visual Search Streak",
+				"Stamps",
+				"Daily Set\nDay 2 of 7",
+			],
+		)
+
+		button = selectors_for(driver).get_open_daily_set_button()
+
+		self.assertIn("Daily Set", button.text)
+
+	def test_the_fallback_ignores_the_level_up_entry_outside_streaks(self):
+		# Scoping to the section is what makes the shorter needle safe: the
+		# level up copy contains "Daily Set" too and must never be clicked.
+		driver = self._driver(
+			labels=["Complete the Daily Set for 7 days in a row"],
+			streaks_labels=["Stamps", "Visual Search Streak"],
+		)
+
+		with self.assertRaises(NoSuchElementException):
+			selectors_for(driver).get_open_daily_set_button()
+
+	def test_the_fallback_reports_absence_rather_than_a_wrong_streak(self):
+		# Skipping the task beats opening a different streak's flyout.
+		driver = self._driver(labels=[], streaks_labels=["Stamps", "Get the Bing app"])
+
+		with self.assertRaises(NoSuchElementException) as caught:
+			selectors_for(driver).get_open_daily_set_button()
+
+		self.assertIn("streaks section", str(caught.exception))
 
 
 class DailySetActivityUrls(unittest.TestCase):

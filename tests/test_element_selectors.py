@@ -204,10 +204,18 @@ class ExploreOnBingSection(unittest.TestCase):
 class DailySetOpener(unittest.TestCase):
 	"""The opener label has to be distinguished from the level up entry."""
 
-	def _driver(self, labels):
-		buttons = [FakeElement(text=text) for text in labels]
+	def _driver(self, labels, streaks_labels=None):
+		"""Buttons on the page, and optionally a streaks section holding its own."""
+		children = {(By.TAG_NAME, "button"): [FakeElement(text=t) for t in labels]}
 
-		return FakeDriver(children={(By.TAG_NAME, "button"): buttons})
+		if streaks_labels is not None:
+			streaks = FakeElement(children={
+				(By.TAG_NAME, "button"): [FakeElement(text=t) for t in streaks_labels]
+			})
+
+			children[(By.ID, "streaks")] = [streaks]
+
+		return FakeDriver(children=children)
 
 	def test_matches_the_streak_button(self):
 		driver = self._driver([
@@ -225,6 +233,44 @@ class DailySetOpener(unittest.TestCase):
 		# No streak button and no streaks section to fall back to.
 		with self.assertRaises(NoSuchElementException):
 			selectors_for(driver).get_open_daily_set_button()
+
+	def test_falls_back_to_the_daily_set_button_inside_streaks(self):
+		# The opener is not third here. The positional fallback this replaces
+		# took whatever sat at that index, which is how #45 and #46 ended up
+		# clicking the mobile app entry and opening the app store.
+		driver = self._driver(
+			labels=["Points breakdown"],
+			streaks_labels=[
+				"Get the Bing app",
+				"Visual Search Streak",
+				"Stamps",
+				"Daily Set\nDay 2 of 7",
+			],
+		)
+
+		button = selectors_for(driver).get_open_daily_set_button()
+
+		self.assertIn("Daily Set", button.text)
+
+	def test_the_fallback_ignores_the_level_up_entry_outside_streaks(self):
+		# Scoping to the section is what makes the shorter needle safe: the
+		# level up copy contains "Daily Set" too and must never be clicked.
+		driver = self._driver(
+			labels=["Complete the Daily Set for 7 days in a row"],
+			streaks_labels=["Stamps", "Visual Search Streak"],
+		)
+
+		with self.assertRaises(NoSuchElementException):
+			selectors_for(driver).get_open_daily_set_button()
+
+	def test_the_fallback_reports_absence_rather_than_a_wrong_streak(self):
+		# Skipping the task beats opening a different streak's flyout.
+		driver = self._driver(labels=[], streaks_labels=["Stamps", "Get the Bing app"])
+
+		with self.assertRaises(NoSuchElementException) as caught:
+			selectors_for(driver).get_open_daily_set_button()
+
+		self.assertIn("streaks section", str(caught.exception))
 
 
 class DailySetActivityUrls(unittest.TestCase):
@@ -340,6 +386,80 @@ class VisualSearchPanel(unittest.TestCase):
 		selectors = selectors_for(self._driver(controls=[self._control("How it works", "true")]))
 
 		self.assertFalse(selectors.visual_search_done_today())
+
+
+class MembershipLevelBadge(unittest.TestCase):
+	"""The badge the dashboard actually renders.
+
+	The real element is
+
+	    <p class="... text-rewardsLevelBadgeFg bg-rewardsGoldBadgeBg">Gold Member</p>
+
+	which carries no word "level" in its text at all. A text-only search for that
+	word found nothing here, which is why the class is the primary hook.
+	"""
+
+	CLASS = (
+		"rounded-ctrlBadgeCorner px-2 py-1 text-globalCaption1Strong "
+		"text-rewardsLevelBadgeFg bg-rewardsGoldBadgeBg"
+	)
+
+	def _badge(self, class_attribute, text):
+		return FakeElement(text=text, attributes={"class": class_attribute})
+
+	def _driver(self, by_class=(), by_text=()):
+		selectors = element_selectors.ElementSelectionUtils
+		css = f'[class*="{element_selectors.LEVEL_BADGE_CLASS}"]'
+
+		return FakeDriver(children={
+			(By.CSS_SELECTOR, css): list(by_class),
+			(By.XPATH, selectors._membership_level_xpath()): list(by_text),
+		})
+
+	def test_finds_the_badge_by_its_class(self):
+		driver = self._driver(by_class=[self._badge(self.CLASS, "Gold Member")])
+
+		self.assertEqual(
+			selectors_for(driver).get_membership_level_badges(),
+			[(self.CLASS, "Gold Member")],
+		)
+
+	def test_the_class_lookup_is_preferred_over_the_text_one(self):
+		# The text search is a far looser net, so it must not run while the
+		# precise hook is still resolving.
+		driver = self._driver(
+			by_class=[self._badge(self.CLASS, "Gold Member")],
+			by_text=[self._badge("", "Become a member today")],
+		)
+
+		badges = selectors_for(driver).get_membership_level_badges()
+
+		self.assertEqual([text for _, text in badges], ["Gold Member"])
+
+	def test_falls_back_to_the_text_search_when_the_class_is_renamed(self):
+		driver = self._driver(by_text=[self._badge("px-2", "Silver Member")])
+
+		self.assertEqual(
+			selectors_for(driver).get_membership_level_badges(),
+			[("px-2", "Silver Member")],
+		)
+
+	def test_the_shortest_text_comes_first(self):
+		# A text search matches the badge's ancestors too, and the innermost
+		# match is the one that is only about the badge.
+		driver = self._driver(by_text=[
+			self._badge("wrapper", "Gold Member | 1,234 points | Redeem"),
+			self._badge(self.CLASS, "Gold Member"),
+		])
+
+		badges = selectors_for(driver).get_membership_level_badges()
+
+		self.assertEqual(badges[0][1], "Gold Member")
+
+	def test_no_badge_anywhere_is_reported_as_missing(self):
+		# Not a failure on its own: a run falls back to REWARDS_LEVEL.
+		with self.assertRaises(NoSuchElementException):
+			selectors_for(self._driver()).get_membership_level_badges()
 
 
 if __name__ == "__main__":

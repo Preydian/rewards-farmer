@@ -25,6 +25,9 @@ services:
       # Comma separated, one profile directory each. Leave unset for a single
       # profile in data-dir, which is the existing behaviour.
       REWARDS_ACCOUNTS: ${REWARDS_ACCOUNTS:-}
+      # member, silver or gold. Leave unset to read it off the dashboard,
+      # which falls back to member when the badge cannot be read.
+      REWARDS_LEVEL: ${REWARDS_LEVEL:-}
       OLLAMA_HOST: ${OLLAMA_HOST:-}
     volumes:
       # Keeps the sign-in across container rebuilds.

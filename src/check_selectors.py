@@ -22,6 +22,7 @@ from selenium.webdriver.common.by import By
 import accounts
 import browser
 import element_selectors
+import levels
 import log_utils
 
 RENDER_TIMEOUT = 60
@@ -216,6 +217,20 @@ def main():
 		driver.get("https://rewards.bing.com/dashboard")
 		wait_until(lambda: elements.get_bonus_button_on_dashboard() is not None, 30)
 		report.check("get_bonus_button_on_dashboard", elements.get_bonus_button_on_dashboard, optional=True)
+
+		print("\n## level")
+		badges = report.check(
+			"get_membership_level_badges", elements.get_membership_level_badges, optional=True
+		)
+
+		# The selector only gathers candidates; which tier they name is the
+		# parser's job, and that half is what is worth seeing here. Nothing
+		# found is not a failure, it only means a run falls back to
+		# REWARDS_LEVEL and then to Member.
+		for class_attribute, text in (badges or [])[:5]:
+			named = levels.level_from_badge(class_attribute, text)
+			flat = " | ".join(text.splitlines())[:28]
+			print(f"    {(named.name if named else '-'):<8} {flat!r:<30} class={class_attribute[:44]!r}")
 
 		print("\n## bing")
 		driver.get("https://www.bing.com/")

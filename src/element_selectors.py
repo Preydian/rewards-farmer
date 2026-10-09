@@ -6,6 +6,17 @@ from selenium.common.exceptions import NoSuchElementException, StaleElementRefer
 from selenium import webdriver
 
 
+# The tier independent half of the level badge's own class, as in
+# "text-rewardsLevelBadgeFg". A markup hook rather than a visible label, so it is
+# not in Labels: unlike the text beside it, it needs no translating.
+LEVEL_BADGE_CLASS = "rewardsLevelBadge"
+
+# XPath 1.0 has no case insensitive compare, so translate() is how a text match
+# is made case insensitive. Spelled out once rather than per selector.
+_UPPERCASE = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_LOWERCASE = "abcdefghijklmnopqrstuvwxyz"
+
+
 class ElementNotReady(NoSuchElementException):
 	"""The element is in the page but not usable yet.
 
@@ -35,6 +46,15 @@ class Labels:
 	READY_TO_CLAIM = "ready to claim"
 	CLAIM = "claim"                      # exact label preferred, substring as fallback
 	DAILY_SET_STREAK = "daily set streak"
+	# Only safe scoped to the streaks section. Unscoped it also matches the
+	# level up entry, "Complete the Daily Set for 7 days in a row", which is
+	# why DAILY_SET_STREAK is tried against the whole page first.
+	DAILY_SET = "daily set"
+	# The badge words every tier as "<tier> Member", so this finds it whatever level
+	# the account is on. Only reached when the badge class cannot be found: the tier
+	# names on their own are not safe to match, since "Gold" names redemption offers
+	# on the same page.
+	MEMBERSHIP_LEVEL = "member"
 	CARD_COMPLETED = "completed"
 	# The full streak label on purpose: plain "visual search" also matches an
 	# element on the dashboard, which can go stale mid-interaction.
@@ -168,6 +188,67 @@ class ElementSelectionUtils:
 		raise NoSuchElementException("sidebar section not found")
 
 	# ------------------------------------------------------------------
+	# membership level
+	# ------------------------------------------------------------------
+
+	@staticmethod
+	def _membership_level_xpath() -> str:
+		"""The browser side filter for elements whose text mentions membership."""
+		lowered = f"translate(., '{_UPPERCASE}', '{_LOWERCASE}')"
+
+		return (
+			"//*[self::p or self::span or self::div or self::h1 or self::h2 or self::h3]"
+			f"[contains({lowered}, '{Labels.MEMBERSHIP_LEVEL.lower()}')]"
+		)
+
+	def _badges(self, by: str, selector: str) -> list[tuple[str, str]]:
+		"""(class, text) for each match, shortest text first.
+
+		Shortest first because a text search matches the badge's ancestors too, and
+		the innermost match is the one that is only about the badge.
+		"""
+		found = []
+
+		for element in self.driver.find_elements(by, selector):
+			try:
+				found.append((
+					element.get_dom_attribute("class") or "",
+					(element.text or "").strip(),
+				))
+			except StaleElementReferenceException:
+				continue
+
+		return sorted(found, key=lambda badge: len(badge[1]))
+
+	def get_membership_level_badges(self) -> list[tuple[str, str]]:
+		"""(class, text) for each element that looks like the level badge.
+
+		The badge carries its tier twice over. The markup is
+
+		    <p class="... text-rewardsLevelBadgeFg bg-rewardsGoldBadgeBg">Gold Member</p>
+
+		so the tier is in the background class and again in the text. Both are handed
+		back for levels.level_from_badge to decide between, which keeps the reading
+		testable without a browser.
+
+		The class is looked up first. LEVEL_BADGE_CLASS is the tier independent half
+		of the badge's own class, so it finds the badge whatever tier the account is
+		on, and it needs no translating. The text search is the fallback for a variant
+		that renames the class; it is a far looser net, which is why it only runs when
+		the class finds nothing.
+		"""
+		for by, selector in (
+			(By.CSS_SELECTOR, f'[class*="{LEVEL_BADGE_CLASS}"]'),
+			(By.XPATH, self._membership_level_xpath()),
+		):
+			badges = self._badges(by, selector)
+
+			if badges:
+				return badges
+
+		raise NoSuchElementException("no membership level badge on the dashboard")
+
+	# ------------------------------------------------------------------
 	# daily set
 	# ------------------------------------------------------------------
 
@@ -190,22 +271,27 @@ class ElementSelectionUtils:
 		except NoSuchElementException:
 			pass
 
-		# The positional fallback only helps if what sits there really is the
-		# daily set entry. On a partially rendered streaks section it is not:
-		# observed returning the mobile app entry, and clicking that opens the
-		# app store page instead of the panel, which is what the reports in #45
-		# and #46 describe. Check before handing it back, and skip the task
-		# rather than click the wrong streak.
-		candidate = self._streaks_button(3)
-		label = (candidate.text or "").strip()
+		# Markets that word the streak label differently still carry "daily set"
+		# on the opener, so fall back to matching that inside the streaks
+		# section. Scoping is what makes the shorter needle safe: the level up
+		# entry lives in a section of its own and stays out of reach.
+		#
+		# This replaces a fallback that took whatever sat third in the section.
+		# On a partially rendered streaks section that was the mobile app entry,
+		# and clicking it opens the app store instead of the panel, which is
+		# what #45 and #46 describe. Matching on content finds the opener
+		# wherever in the section it sits, and never returns a different streak.
+		streaks = self.driver.find_element(By.ID, "streaks")
 
-		if "daily set" not in label.lower():
+		try:
+			return self._button_containing(Labels.DAILY_SET, root=streaks)
+		except NoSuchElementException:
+			# Absence rather than a wrong guess, so the wait above the caller
+			# keeps retrying while the section fills, and reports a skip only
+			# if it never does.
 			raise NoSuchElementException(
-				"daily set opener not found by label, and position 3 holds "
-				f"{label.splitlines()[0] if label else '<empty>'!r} instead"
-			)
-
-		return candidate
+				f"no button in the streaks section contains {Labels.DAILY_SET!r}"
+			) from None
 
 	def get_daily_set_elements(self):
 		"""The daily set activities in the opened panel.
